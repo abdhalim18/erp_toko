@@ -1,0 +1,72 @@
+.chartBar {
+  width: 1rem;
+  border-top-left-radius: 0.125rem;
+  border-top-right-radius: 0.125rem;
+  transition: height 0.3s ease;
+  min-height: 2px; /* Ensure visibility for very small values */
+}
+
+/* Bar colors */
+.sales {
+  background-color: hsl(221.2 83.2% 53.3%);
+}
+
+.purchases {
+  background-color: hsl(142.1 76.2% 36.3%);
+}
+
+.chartContainer {
+  height: 300px;
+  background-color: hsl(var(--muted) / 0.1);
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+.chartGrid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 0.5rem;
+  height: 100%;
+}
+
+.chartBar {
+  width: 1rem;
+  border-top-left-radius: 0.125rem;
+  border-top-right-radius: 0.125rem;
+}
+
+.chartBar.sales {
+  background-color: hsl(221.2 83.2% 53.3%);
+}
+
+.chartBar.purchases {
+  background-color: hsl(142.1 76.2% 36.3%);
+}
+
+.legend {
+  display: flex;
+  justify-content: center;
+  gap: 1.5rem;
+  margin-top: 1rem;
+  font-size: 0.75rem;
+}
+
+.legendItem {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.legendColor {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 0.125rem;
+}
+
+.legendColor.sales {
+  background-color: hsl(221.2 83.2% 53.3%);
+}
+
+.legendColor.purchases {
+  background-color: hsl(142.1 76.2% 36.3%);
+}

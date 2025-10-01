@@ -1,0 +1,198 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String         @id @default(cuid())
+  name          String
+  email         String         @unique
+  password      String
+  role          UserRole       @default(STAFF)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  refreshTokens RefreshToken[]
+  Sale          Sale[]
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "RefreshToken_userId_fkey")
+}
+
+model Product {
+  id            String         @id @default(cuid())
+  name          String
+  description   String?
+  sku           String         @unique
+  barcode       String?
+  unit          String
+  purchasePrice Decimal        @default(0.000000000000000000000000000000)
+  sellingPrice  Decimal        @default(0.000000000000000000000000000000)
+  minStockLevel Int            @default(10)
+  currentStock  Int            @default(0)
+  supplierId    String
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  categoryId    String
+  batches       Batch[]
+  category      Category       @relation(fields: [categoryId], references: [id])
+  supplier      Supplier       @relation(fields: [supplierId], references: [id])
+  PurchaseItem  PurchaseItem[]
+  SaleItem      SaleItem[]
+
+  @@index([categoryId], map: "Product_categoryId_fkey")
+  @@index([supplierId], map: "Product_supplierId_fkey")
+}
+
+model Batch {
+  id                String         @id @default(cuid())
+  batchNumber       String
+  productId         String
+  quantity          Int
+  expiryDate        DateTime
+  manufacturingDate DateTime
+  purchaseDate      DateTime       @default(now())
+  supplierId        String
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  product           Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier          Supplier       @relation(fields: [supplierId], references: [id])
+  PurchaseItem      PurchaseItem[]
+  sales             SaleItem[]
+
+  @@index([productId], map: "Batch_productId_fkey")
+  @@index([supplierId], map: "Batch_supplierId_fkey")
+}
+
+model Category {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  products    Product[]
+}
+
+model Supplier {
+  id          String          @id @default(cuid())
+  name        String
+  contactName String?
+  email       String?
+  phone       String?
+  address     String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  batches     Batch[]
+  products    Product[]
+  purchases   PurchaseOrder[]
+}
+
+model PurchaseOrder {
+  id           String         @id @default(cuid())
+  orderNumber  String         @unique
+  supplierId   String
+  status       OrderStatus    @default(PENDING)
+  orderDate    DateTime       @default(now())
+  expectedDate DateTime?
+  receivedDate DateTime?
+  totalAmount  Decimal
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  items        PurchaseItem[]
+  supplier     Supplier       @relation(fields: [supplierId], references: [id])
+
+  @@index([supplierId], map: "PurchaseOrder_supplierId_fkey")
+}
+
+model PurchaseItem {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  productId       String
+  quantity        Int
+  pricePerUnit    Decimal
+  batchId         String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  batch           Batch?        @relation(fields: [batchId], references: [id])
+  product         Product       @relation(fields: [productId], references: [id])
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  @@index([batchId], map: "PurchaseItem_batchId_fkey")
+  @@index([productId], map: "PurchaseItem_productId_fkey")
+  @@index([purchaseOrderId], map: "PurchaseItem_purchaseOrderId_fkey")
+}
+
+model Sale {
+  id            String        @id @default(cuid())
+  invoiceNumber String        @unique
+  customerName  String
+  customerPhone String?
+  customerEmail String?
+  subtotal      Decimal       @default(0.000000000000000000000000000000)
+  tax           Decimal       @default(0.000000000000000000000000000000)
+  discount      Decimal       @default(0.000000000000000000000000000000)
+  total         Decimal       @default(0.000000000000000000000000000000)
+  paymentMethod String
+  paymentStatus PaymentStatus @default(PENDING)
+  status        OrderStatus   @default(COMPLETED)
+  notes         String?
+  userId        String
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  user          User          @relation(fields: [userId], references: [id])
+  items         SaleItem[]
+
+  @@index([userId], map: "Sale_userId_fkey")
+}
+
+model SaleItem {
+  id           String   @id @default(cuid())
+  saleId       String
+  productId    String
+  quantity     Int
+  pricePerUnit Decimal
+  subtotal     Decimal
+  batchId      String?
+  discount     Decimal  @default(0.000000000000000000000000000000)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  batch        Batch?   @relation(fields: [batchId], references: [id])
+  product      Product  @relation(fields: [productId], references: [id])
+  sale         Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+
+  @@index([batchId], map: "SaleItem_batchId_fkey")
+  @@index([productId], map: "SaleItem_productId_fkey")
+  @@index([saleId], map: "SaleItem_saleId_fkey")
+}
+
+enum UserRole {
+  ADMIN
+  STAFF
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  PARTIALLY_PAID
+  CANCELLED
+  REFUNDED
+}
+
+enum OrderStatus {
+  DRAFT
+  PENDING
+  COMPLETED
+  CANCELLED
+  PARTIALLY_RECEIVED
+}
