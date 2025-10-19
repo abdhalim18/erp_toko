@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -33,20 +33,11 @@ type PurchaseItem = {
 export default function NewPurchasePage() {
   const router = useRouter();
   
-  // Data dummy pemasok
-  const suppliers: Supplier[] = [
-    { id: '1', name: 'PT Sumber Sehat Abadi' },
-    { id: '2', name: 'CV Pet Lovers' },
-    { id: '3', name: 'PT Pet Food Indonesia' },
-  ];
-
-  // Data dummy produk
-  const products: Product[] = [
-    { id: '1', name: 'Obat Cacing', sku: 'OBT-001', stock: 100, price: 25000 },
-    { id: '2', name: 'Makanan Kucing 1kg', sku: 'MK-001', stock: 50, price: 50000 },
-    { id: '3', name: 'Kandang Kecil', sku: 'KDG-001', stock: 20, price: 150000 },
-  ];
-
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [formData, setFormData] = useState({
     supplierId: '',
     invoiceNumber: `INV-${Date.now()}`,
@@ -59,9 +50,34 @@ export default function NewPurchasePage() {
     { productId: '', quantity: 1, price: 0, subtotal: 0 },
   ]);
 
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        setLoading(true);
+        
+        // Fetch suppliers
+        const suppliersRes = await fetch('/api/pemasok');
+        if (!suppliersRes.ok) throw new Error('Gagal mengambil data pemasok');
+        const suppliersData = await suppliersRes.json();
+        setSuppliers(suppliersData);
+
+        // Fetch products
+        const productsRes = await fetch('/api/produk');
+        if (!productsRes.ok) throw new Error('Gagal mengambil data produk');
+        const productsData = await productsRes.json();
+        setProducts(productsData);
+        
+      } catch (err) {
+        const error = err as Error;
+        console.error('Error fetching data:', error);
+        setError(error.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, []);
 
   // Handler functions will be added here
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {

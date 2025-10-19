@@ -1,0 +1,153 @@
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+
+// Ensure database connection is available
+prisma.$connect().catch((error) => {
+  console.error('Gagal terhubung ke database:', error);
+  throw new Error('Tidak dapat terhubung ke database');
+});
+
+// Helper function to check if a column exists in a table
+async function columnExists(table: string, column: string): Promise<boolean> {
+  try {
+    const [result] = await prisma.$queryRaw`
+      SELECT COUNT(*) as exists_flag 
+      FROM information_schema.COLUMNS 
+      WHERE TABLE_SCHEMA = DATABASE() 
+      AND TABLE_NAME = ${table} 
+      AND COLUMN_NAME = ${column}`;
+    
+    return result?.exists_flag > 0;
+  } catch (error) {
+    console.error(`Error checking if column ${column} exists in ${table}:`, error);
+    return false;
+  }
+}
+
+export async function GET() {
+  try {
+    console.log('Mengambil data kategori...');
+    
+    // Check which columns exist
+    const [hasKodeColumn, hasStatusColumn] = await Promise.all([
+      columnExists('kategori', 'kode'),
+      columnExists('kategori', 'status')
+    ]);
+    
+    // Build the query based on which columns exist
+    let query = `
+      SELECT 
+        id,
+        ${hasKodeColumn ? 'kode' : 'CONCAT(\'KTG-\', LPAD(HEX(id), 8, \'0\')) as kode'},
+        nama as name,
+        deskripsi as description,
+        created_at as "createdAt",
+        updated_at as "updatedAt"
+      FROM kategori
+    `;
+    
+    // Add status filter if status column exists
+    if (hasStatusColumn) {
+      query += ` WHERE status = 'AKTIF' OR status IS NULL`;
+    }
+    
+    query += ' ORDER BY nama ASC';
+    
+    // Execute the query
+    const categories = await prisma.$queryRawUnsafe(query);
+    
+    console.log('Data kategori yang dikirim:', categories);
+    
+    // Format the response
+    const formattedCategories = (categories as any[]).map(cat => ({
+      id: cat.id,
+      kode: cat.kode || `KTG-${cat.id.substring(0, 8).toUpperCase()}`,
+      name: cat.name,
+      description: cat.description || '',
+      createdAt: cat.createdAt,
+      updatedAt: cat.updatedAt,
+      _count: {
+        products: 0 // Will be updated with a separate query if needed
+      }
+    }));
+    
+    return NextResponse.json(formattedCategories);
+  } catch (error) {
+    console.error('Error fetching categories:', error);
+    return NextResponse.json(
+      { 
+        error: 'Gagal mengambil data kategori',
+        details: error instanceof Error ? error.message : 'Unknown error',
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      },
+      { status: 500 }
+    );
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const { name, kode, description } = await request.json();
+    
+    // Validate required fields
+    if (!name) {
+      return NextResponse.json(
+        { error: 'Nama kategori harus diisi' },
+        { status: 400 }
+      );
+    }
+    
+    // Check if status column exists
+    const hasStatusColumn = await columnExists('kategori', 'status');
+    
+    // Build the insert query
+    const insertColumns = ['id', 'nama', 'deskripsi', 'created_at', 'updated_at'];
+    const insertValues = ['UUID()', '${name}', '${description || null}', 'NOW()', 'NOW()'];
+    
+    if (hasStatusColumn) {
+      insertColumns.push('status');
+      insertValues.push('\'AKTIF\'');
+    }
+    
+    // Create new category with transaction
+    const [newCategory] = await prisma.$transaction([
+      prisma.$executeRawUnsafe(`
+        INSERT INTO kategori (
+          ${insertColumns.join(', ')}
+        ) VALUES (
+          ${insertValues.join(', ')}
+        )`),
+      
+      prisma.$queryRaw`
+        SELECT 
+          id,
+          ${hasStatusColumn ? 'status,' : ''}
+          COALESCE(kode, CONCAT('KTG-', LPAD(HEX(id), 8, '0'))) as kode,
+          nama as name,
+          deskripsi as description,
+          created_at as "createdAt",
+          updated_at as "updatedAt"
+        FROM kategori 
+        WHERE nama = ${name}
+        ORDER BY created_at DESC
+        LIMIT 1`
+    ]);
+    
+    return NextResponse.json(newCategory, { status: 201 });
+    
+  } catch (error) {
+    console.error('Error creating category:', error);
+    return NextResponse.json(
+      { 
+        error: 'Gagal menambahkan kategori',
+        details: error instanceof Error ? error.message : 'Unknown error',
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      },
+      { status: 500 }
+    );
+  } finally {
+    await prisma.$disconnect();
+  }
+}

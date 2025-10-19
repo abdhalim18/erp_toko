@@ -30,9 +30,9 @@ export default function SettingsPage() {
     },
     {
       title: "Profil Akun",
-      href: "/pengaturan/akun",
+      href: "/pengaturan/profil",
       icon: <UserCircle className="h-5 w-5" />,
-      description: "Kelaua profil akun Anda"
+      description: "Kelola profil akun Anda"
     },
     {
       title: "Keamanan",

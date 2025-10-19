@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -11,6 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Plus, ArrowLeft, Save, Loader2, Image as ImageIcon } from "lucide-react";
 import Link from "next/link";
+import { toast } from "sonner";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 type Category = {
   id: string;
@@ -22,25 +24,34 @@ type Supplier = {
   name: string;
 };
 
+type FormData = {
+  name: string;
+  sku: string;
+  barcode: string;
+  categoryId: string;
+  supplierId: string;
+  description: string;
+  purchasePrice: number;
+  sellingPrice: number;
+  stock: number;
+  minStock: number;
+  unit: string;
+  weight: number;
+  isActive: boolean;
+};
+
 export default function NewProductPage() {
   const router = useRouter();
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [loadingCategories, setLoadingCategories] = useState<boolean>(true);
+  const [categoriesError, setCategoriesError] = useState<string>('');
   
-  // Data dummy kategori (nanti bisa diganti dengan data dari API)
-  const categories: Category[] = [
-    { id: '1', name: 'Obat' },
-    { id: '2', name: 'Makanan' },
-    { id: '3', name: 'Aksesoris' },
-    { id: '4', name: 'Perlengkapan' },
-  ];
-
-  // Data dummy pemasok (nanti bisa diganti dengan data dari API)
-  const suppliers: Supplier[] = [
-    { id: '1', name: 'PT Sumber Sehat Abadi' },
-    { id: '2', name: 'CV Pet Lovers' },
-    { id: '3', name: 'PT Pet Food Indonesia' },
-  ];
-
-  const [formData, setFormData] = useState({
+  // Supplier states
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [loadingSuppliers, setLoadingSuppliers] = useState<boolean>(true);
+  const [suppliersError, setSuppliersError] = useState<string>('');
+  
+  const [formData, setFormData] = useState<FormData>({
     name: '',
     sku: `PRD-${Date.now().toString().slice(-6)}`,
     barcode: '',
@@ -55,6 +66,122 @@ export default function NewProductPage() {
     weight: 0,
     isActive: true,
   });
+
+  // Fetch categories from API
+  useEffect(() => {
+    const fetchCategories = async () => {
+      try {
+        setLoading(true);
+        console.log('Fetching categories from /api/kategori...');
+        
+        const response = await fetch('/api/kategori', {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          cache: 'no-store', // Prevent caching
+        });
+        
+        console.log('Response status:', response.status);
+        
+        if (!response.ok) {
+          let errorData;
+          try {
+            errorData = await response.json();
+            console.error('Error response from API:', errorData);
+          } catch (e) {
+            console.error('Failed to parse error response:', e);
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          
+          const errorMessage = errorData?.error || 'Gagal mengambil data kategori';
+          const errorDetails = errorData?.details ? ` (${errorData.details})` : '';
+          throw new Error(`${errorMessage}${errorDetails}`);
+        }
+        
+        const responseData = await response.json();
+        console.log('Categories API response:', responseData);
+        
+        // Ensure we have an array of categories
+        const categoriesArray = Array.isArray(responseData) ? responseData : [];
+        
+        if (categoriesArray.length === 0) {
+          console.warn('No categories found in the response');
+        } else {
+          console.log(`Successfully loaded ${categoriesArray.length} categories`);
+        }
+        
+        setCategories(categoriesArray);
+      } catch (error) {
+        console.error('Error in fetchCategories:', {
+          error,
+          message: error instanceof Error ? error.message : 'Unknown error',
+          stack: error instanceof Error ? error.stack : undefined,
+          timestamp: new Date().toISOString()
+        });
+        setError('Gagal memuat data kategori. Silakan periksa koneksi database dan coba lagi.');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    // Fetch suppliers from API
+    const fetchSuppliers = async () => {
+      try {
+        setLoadingSuppliers(true);
+        console.log('Fetching suppliers from API...');
+        
+        const response = await fetch('/api/pemasok', {
+          cache: 'no-store',
+        });
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('Supplier error response:', errorText);
+          throw new Error(`Gagal mengambil data pemasok: ${response.status} ${response.statusText}`);
+        }
+        
+        const suppliersData = await response.json();
+        console.log('Suppliers data received:', suppliersData);
+        
+        // Handle both array response and { data: [] } response formats
+        const suppliersArray = Array.isArray(suppliersData) 
+          ? suppliersData 
+          : Array.isArray(suppliersData?.data) 
+            ? suppliersData.data 
+            : [];
+            
+        console.log('Processed suppliers:', suppliersArray);
+        
+        if (suppliersArray.length === 0) {
+          console.warn('No suppliers found or empty suppliers array');
+          setSuppliersError('Tidak ada pemasok tersedia. Silakan buat pemasok terlebih dahulu.');
+        }
+        
+        setSuppliers(suppliersArray);
+      } catch (error) {
+        console.error('Error in fetchSuppliers:', error);
+        const errorMessage = error instanceof Error ? error.message : 'Terjadi kesalahan yang tidak diketahui';
+        setSuppliersError('Gagal memuat data pemasok. ' + errorMessage);
+        toast.error('Gagal memuat pemasok', {
+          description: errorMessage,
+        });
+      } finally {
+        setLoadingSuppliers(false);
+      }
+    };
+
+    // Fetch both categories and suppliers in parallel
+    Promise.all([fetchCategories(), fetchSuppliers()])
+      .catch(error => {
+        console.error('Error in parallel fetching:', error);
+      });
+    
+    // Cleanup function
+    return () => {
+      // Any cleanup if needed
+    };
+  }, []);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -112,7 +239,12 @@ export default function NewProductPage() {
       return;
     }
 
-    if (formData.sellingPrice < formData.purchasePrice) {
+    if (!formData.supplierId) {
+      setError('Pemasok harus dipilih');
+      return;
+    }
+
+    if (Number(formData.sellingPrice) < Number(formData.purchasePrice)) {
       setError('Harga jual tidak boleh lebih kecil dari harga beli');
       return;
     }
@@ -121,17 +253,68 @@ export default function NewProductPage() {
     setError('');
 
     try {
-      // Simulasi API call
       console.log('Mengirim data produk:', formData);
       
-      // Simulasi delay
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const response = await fetch('/api/produk', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: formData.name,
+          sku: formData.sku,
+          description: formData.description,
+          purchasePrice: formData.purchasePrice,
+          sellingPrice: formData.sellingPrice,
+          categoryId: formData.categoryId,
+          supplierId: formData.supplierId,
+          barcode: formData.barcode || null,
+          unit: formData.unit,
+          minStock: formData.minStock
+        })
+      });
       
-      // Redirect ke halaman daftar produk setelah berhasil
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error('API Error:', errorData);
+        
+        let errorMessage = 'Gagal menyimpan produk';
+        if (errorData.error) {
+          errorMessage = errorData.error;
+          if (errorData.details) {
+            errorMessage += `: ${errorData.details}`;
+          }
+        } else if (response.status === 400) {
+          errorMessage = 'Permintaan tidak valid. Silakan periksa data yang Anda masukkan.';
+        } else if (response.status === 500) {
+          errorMessage = 'Terjadi kesalahan server. Silakan coba lagi nanti.';
+        }
+        
+        throw new Error(errorMessage);
+      }
+      
+      // Show success message and redirect
+      console.log('Produk berhasil disimpan');
       router.push('/produk');
+      router.refresh(); // Refresh the product list
+      
     } catch (err) {
       console.error('Gagal menyimpan produk:', err);
-      setError('Gagal menyimpan produk. Silakan coba lagi.');
+      
+      // More user-friendly error messages
+      let errorMessage = 'Gagal menyimpan produk. Silakan coba lagi.';
+      
+      if (err instanceof Error) {
+        if (err.message.includes('Failed to fetch')) {
+          errorMessage = 'Tidak dapat terhubung ke server. Periksa koneksi internet Anda.';
+        } else if (err.message.includes('JSON')) {
+          errorMessage = 'Terjadi kesalahan dalam memproses respons dari server.';
+        } else {
+          errorMessage = err.message;
+        }
+      }
+      
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -236,22 +419,63 @@ export default function NewProductPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="categoryId">Kategori *</Label>
-                    <Select
-                      value={formData.categoryId}
-                      onValueChange={(value) => handleSelectChange('categoryId', value)}
-                      required
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Pilih Kategori" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {categories.map(category => (
-                          <SelectItem key={category.id} value={category.id}>
-                            {category.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    {loadingCategories ? (
+                      <div className="flex items-center space-x-2">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <span>Memuat kategori...</span>
+                      </div>
+                    ) : categoriesError ? (
+                      <Alert variant="destructive">
+                        <AlertDescription>
+                          {categoriesError}
+                          <Button 
+                            variant="link" 
+                            className="h-auto p-0 ml-2"
+                            onClick={() => window.location.reload()}
+                          >
+                            Coba Lagi
+                          </Button>
+                        </AlertDescription>
+                      </Alert>
+                    ) : (
+                      <Select
+                        value={formData.categoryId}
+                        onValueChange={(value) => handleSelectChange('categoryId', value)}
+                        required
+                        disabled={categories.length === 0}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder={
+                            categories.length === 0 
+                              ? 'Tidak ada kategori tersedia' 
+                              : 'Pilih Kategori'
+                          } />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {categories.length > 0 ? (
+                            categories.map(category => (
+                              <SelectItem key={category.id} value={category.id}>
+                                {category.name}
+                              </SelectItem>
+                            ))
+                          ) : (
+                            <div className="text-sm text-muted-foreground p-2">
+                              Tidak ada kategori tersedia. 
+                              <Link 
+                                href="/kategori/baru" 
+                                className="text-primary underline ml-1"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  router.push('/kategori/baru');
+                                }}
+                              >
+                                Buat kategori baru
+                              </Link>
+                            </div>
+                          )}
+                        </SelectContent>
+                      </Select>
+                    )}
                   </div>
                   
                   <div className="space-y-2">
