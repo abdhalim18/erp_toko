@@ -1,105 +1,68 @@
 // app/api/auth/[...nextauth]/route.ts
-import NextAuth, { NextAuthOptions } from "next-auth";
-import { PrismaAdapter } from "@auth/prisma-adapter";
+import NextAuth from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
-import { prisma } from "@/lib/prisma";
-import { Adapter } from "next-auth/adapters";
+import pool from "@/lib/db";
 
-// Extend the built-in session types
-declare module "next-auth" {
-  interface Session {
-    user: {
-      id: string;
-      email: string;
-      name: string;
-      role: string;
-    };
-  }
-  interface User {
-    id: string;
-    email: string;
-    name: string;
-    role: string;
-  }
-}
-
-declare module "next-auth/jwt" {
-  interface JWT {
-    id: string;
-    role: string;
-  }
-}
-
-// Fix for PrismaAdapter type compatibility
-const adapter = PrismaAdapter(prisma) as Adapter;
-
-export const authOptions: NextAuthOptions = {
-  adapter,
+const handler = NextAuth({
   providers: [
     CredentialsProvider({
       name: "credentials",
       credentials: {
         email: { label: "Email", type: "email" },
-        password: { label: "Password", type: "password" },
+        password: { label: "Password", type: "password" }
       },
-      async authorize(credentials) {
+      async authorize(credentials: any) {
         if (!credentials?.email || !credentials?.password) {
-          throw new Error("Please enter your email and password");
+          return null;
         }
 
-        const user = await prisma.user.findUnique({
-          where: { email: credentials.email },
-        });
+        try {
+          const [rows] = await pool.query(
+            'SELECT * FROM pengguna WHERE email = ? LIMIT 1',
+            [credentials.email]
+          );
 
-        if (!user) {
-          throw new Error("No user found with this email");
+          const user = (rows as any[])[0];
+
+          if (user && await bcrypt.compare(credentials.password, user.password)) {
+            return {
+              id: user.id.toString(),
+              email: user.email,
+              name: user.name,
+              role: user.role,
+            };
+          }
+
+          return null;
+        } catch (error) {
+          console.error('Auth error:', error);
+          return null;
         }
-
-        const isValid = await bcrypt.compare(
-          credentials.password,
-          user.password
-        );
-
-        if (!isValid) {
-          throw new Error("Invalid password");
-        }
-
-        return {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          role: user.role,
-        };
-      },
-    }),
+      }
+    })
   ],
+  session: {
+    strategy: "jwt",
+  },
+  pages: {
+    signIn: '/login',
+  },
   callbacks: {
-    async jwt({ token, user }) {
+    async jwt({ token, user }: any) {
       if (user) {
         token.role = user.role;
-        token.id = user.id;
       }
       return token;
     },
-    async session({ session, token }) {
-      if (session?.user) {
+    async session({ session, token }: any) {
+      if (token) {
+        session.user.id = token.sub;
         session.user.role = token.role;
-        session.user.id = token.id;
       }
       return session;
     },
   },
-  session: {
-    strategy: "jwt" as const,
-  },
-  secret: process.env.NEXTAUTH_SECRET,
-  pages: {
-    signIn: "/login",
-  },
-  debug: process.env.NODE_ENV === "development",
-};
-
-const handler = NextAuth(authOptions);
+});
 
 export { handler as GET, handler as POST };

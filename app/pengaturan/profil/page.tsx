@@ -1,13 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useSession, signOut } from 'next-auth/react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Edit, ArrowLeft, Upload, Save, LogOut } from 'lucide-react';
+import { Edit, ArrowLeft, Upload, LogOut } from 'lucide-react';
 import Link from 'next/link';
 
 export default function ProfileSettingsPage() {
@@ -15,7 +15,14 @@ export default function ProfileSettingsPage() {
   const [isEditing, setIsEditing] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
-  const [avatarPreview, setAvatarPreview] = useState(session?.user?.image || '');
+  const [avatarPreview, setAvatarPreview] = useState('');
+
+  // Set initial avatar preview when session is loaded
+  useEffect(() => {
+    if (session?.user?.image) {
+      setAvatarPreview(session.user.image);
+    }
+  }, [session?.user?.image]);
   
   const [formData, setFormData] = useState({
     name: session?.user?.name || '',
@@ -26,11 +33,38 @@ export default function ProfileSettingsPage() {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      setAvatarFile(file);
-      setAvatarPreview(URL.createObjectURL(file));
+    if (!file) return;
+
+    // Validate file type
+    const validTypes = ['image/jpeg', 'image/png', 'image/jpg'];
+    if (!validTypes.includes(file.type)) {
+      alert('Format file tidak didukung. Gunakan format JPG atau PNG.');
+      return;
     }
+
+    // Validate file size (2MB max)
+    if (file.size > 2 * 1024 * 1024) {
+      alert('Ukuran file terlalu besar. Maksimal 2MB.');
+      return;
+    }
+
+    // Clean up previous URL if it exists
+    if (avatarPreview.startsWith('blob:')) {
+      URL.revokeObjectURL(avatarPreview);
+    }
+
+    setAvatarFile(file);
+    setAvatarPreview(URL.createObjectURL(file));
   };
+
+  // Clean up object URLs when component unmounts
+  useEffect(() => {
+    return () => {
+      if (avatarPreview.startsWith('blob:')) {
+        URL.revokeObjectURL(avatarPreview);
+      }
+    };
+  }, [avatarPreview]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -45,29 +79,41 @@ export default function ProfileSettingsPage() {
     setIsLoading(true);
     
     try {
-      // TODO: Implement API call to update profile
-      // This would typically involve:
-      // 1. Uploading the avatar if changed
-      // 2. Updating the user's profile information
-      // 3. Updating the session with the new data
+      let imageUrl = avatarPreview;
       
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // If there's a new file to upload
+      if (avatarFile) {
+        const formData = new FormData();
+        formData.append('avatar', avatarFile);
+        
+        const response = await fetch('/api/upload-avatar', {
+          method: 'POST',
+          body: formData,
+        });
+        
+        if (!response.ok) {
+          throw new Error('Gagal mengunggah foto profil');
+        }
+        
+        const data = await response.json();
+        imageUrl = data.url;
+      }
       
-      // Update session with new data
+      // Update user profile
       await update({
         ...session,
         user: {
           ...session?.user,
           name: formData.name,
           email: formData.email,
-          image: avatarPreview
+          image: imageUrl
         }
       });
       
       setIsEditing(false);
     } catch (error) {
       console.error('Error updating profile:', error);
+      alert(error instanceof Error ? error.message : 'Terjadi kesalahan saat memperbarui profil');
     } finally {
       setIsLoading(false);
     }
@@ -134,22 +180,24 @@ export default function ProfileSettingsPage() {
                     </AvatarFallback>
                   </Avatar>
                   {isEditing && (
-                    <div className="relative">
-                      <Button 
-                        type="button" 
-                        variant="outline" 
-                        size="sm"
-                        className="relative"
+                    <div className="space-y-2">
+                      <Label 
+                        htmlFor="avatar-upload" 
+                        className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 border rounded-md hover:bg-accent"
                       >
-                        <Upload className="mr-2 h-4 w-4" />
-                        Ganti Foto
+                        <Upload className="h-4 w-4" />
+                        <span>Ganti Foto</span>
                         <input
+                          id="avatar-upload"
                           type="file"
-                          accept="image/*"
+                          accept="image/png, image/jpeg, image/jpg"
                           onChange={handleFileChange}
-                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                          className="sr-only"
                         />
-                      </Button>
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        Format: JPG, PNG (Maks. 2MB)
+                      </p>
                     </div>
                   )}
                 </div>

@@ -1,161 +1,91 @@
 import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import pool from '@/lib/db';
 
 export async function GET() {
+  let connection;
   try {
-    // First, verify the table structure
-    const tableInfo = await prisma.$queryRaw`
-      SELECT COLUMN_NAME, DATA_TYPE 
-      FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = 'vetmed_erp' 
-      AND TABLE_NAME = 'penjualan'
-    `;
-    console.log('Penjualan table structure:', tableInfo);
-
-    // Get sales data with correct column names
-    const sales = await prisma.$queryRaw`
-      SELECT 
-        p.penjualan as id,
-        p.nomor_invoice as no_faktur,
-        COALESCE(p.nama_pelanggan, 'Pelanggan Umum') as nama_pelanggan,
-        p.dibuat_pada as tanggal,
-        p.total,
-        p.status,
-        p.dibuat_pada as created_at,
-        p.diperbarui_pada as updated_at
-      FROM penjualan p
-      ORDER BY p.dibuat_pada DESC
-    `;
-
-    console.log('Fetched sales data:', sales);
-    
-    // Convert BigInt to string to avoid serialization issues
-    const safeSales = JSON.parse(JSON.stringify(sales, (key, value) =>
-      typeof value === 'bigint' ? value.toString() : value
-    ));
-
-    return NextResponse.json(safeSales, { 
-      status: 200,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    connection = await pool.getConnection();
+    const [rows] = await connection.query(
+      `SELECT 
+         p.id,
+         CONCAT('INV-', DATE_FORMAT(p.tanggal, '%Y%m%d'), '-', LPAD(p.id, 6, '0')) AS no_faktur,
+         'Pelanggan Umum' AS nama_pelanggan,
+         p.tanggal AS tanggal,
+         COALESCE(p.grand_total, p.total, 0) AS total,
+         'SELESAI' AS status,
+         COALESCE(p.dibuat_pada, p.tanggal) AS created_at,
+         p.diperbarui_pada AS updated_at
+       FROM penjualan p
+       ORDER BY p.tanggal DESC`
+    );
+    return NextResponse.json(rows, { status: 200 });
   } catch (error) {
     console.error('Error in GET /api/penjualan:', error);
-    return NextResponse.json(
-      { error: 'Gagal mengambil data penjualan' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Gagal mengambil data penjualan' }, { status: 500 });
   } finally {
-    await prisma.$disconnect();
+    if (connection) connection.release();
   }
 }
 
 export async function POST(request: Request) {
+  let connection;
   try {
     const data = await request.json();
-    
-    // Validate required fields
-    if (!data.items || !data.items.length) {
-      return NextResponse.json(
-        { 
-          success: false,
-          error: 'Minimal satu item harus ditambahkan' 
-        },
-        { status: 400 }
+    const { items, userId, notes } = data;
+
+    if (!items || !items.length) {
+      return NextResponse.json({ success: false, error: 'Minimal satu item harus ditambahkan' }, { status: 400 });
+    }
+
+    const total = items.reduce((sum: number, it: any) => sum + (Number(it.quantity) * Number(it.unitPrice)), 0);
+    const diskon = Number(data.discount || 0);
+    const pajak = Number(data.tax || 0);
+    const grandTotal = total - diskon + pajak;
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    const [headerResult] = await connection.query(
+      `INSERT INTO penjualan (tanggal, id_pengguna, total, diskon, pajak, grand_total, catatan)
+       VALUES (NOW(), ?, ?, ?, ?, ?, ?)`,
+      [userId || null, total, diskon, pajak, grandTotal, notes || null]
+    ) as [any, any];
+
+    const saleId = headerResult.insertId;
+
+    for (const it of items) {
+      const qty = Number(it.quantity);
+      const harga = Number(it.unitPrice);
+      const subtotal = qty * harga;
+
+      await connection.query(
+        `INSERT INTO penjualan_item (id_penjualan, id_produk, id_batch, qty, harga, subtotal)
+         VALUES (?, ?, NULL, ?, ?, ?)`,
+        [saleId, it.productId, qty, harga, subtotal]
+      );
+
+      await connection.query(
+        `UPDATE produk SET stok = stok - ? WHERE id = ?`,
+        [qty, it.productId]
+      );
+
+      await connection.query(
+        `INSERT INTO stok_mutasi (id_produk, id_batch, tipe, qty, referensi_tipe, referensi_id, keterangan)
+         VALUES (?, NULL, 'OUT', ?, 'PENJUALAN', ?, 'Penjualan')`,
+        [it.productId, qty, saleId]
       );
     }
 
-    // Start a transaction
-    const result = await prisma.$transaction(async (tx) => {
-      // Create sale header
-      await tx.$executeRaw`
-        INSERT INTO penjualan (
-          nomor_invoice,
-          nama_pelanggan,
-          telepon_pelanggan,
-          email_pelanggan,
-          subtotal,
-          pajak,
-          diskon,
-          total,
-          metode_pembayaran,
-          status_pembayaran,
-          status,
-          catatan,
-          id_pengguna,
-          dibuat_pada,
-          diperbarui_pada
-        ) VALUES (
-          CONCAT('INV-', DATE_FORMAT(NOW(), '%Y%m%d-'), LPAD(FLOOR(RAND() * 10000), 4, '0')),
-          ${data.customerName || 'Pelanggan Umum'},
-          ${data.phone || null},
-          ${data.email || null},
-          ${data.subtotal || 0},
-          ${data.tax || 0},
-          ${data.discount || 0},
-          ${data.total},
-          ${data.paymentMethod || 'CASH'},
-          'PAID',
-          'COMPLETED',
-          ${data.notes || null},
-          ${data.userId || null},
-          NOW(),
-          NOW()
-        )
-      `;
+    await connection.commit();
 
-      // Get the inserted sale ID
-      const [sale] = await tx.$queryRaw`
-        SELECT penjualan as id FROM penjualan 
-        ORDER BY dibuat_pada DESC 
-        LIMIT 1
-      `;
-
-      // Insert sale items
-      for (const item of data.items) {
-        await tx.$executeRaw`
-          INSERT INTO detail_penjualan (
-            id_penjualan,
-            id_produk,
-            jumlah,
-            harga_satuan,
-            subtotal
-          ) VALUES (
-            ${sale.id},
-            ${item.productId},
-            ${item.quantity},
-            ${item.unitPrice},
-            ${item.subtotal}
-          )
-        `;
-
-        // Update product stock
-        await tx.$executeRaw`
-          UPDATE produk 
-          SET stok_sekarang = stok_sekarang - ${item.quantity}
-          WHERE produk = ${item.productId}
-        `;
-      }
-
-      return { success: true, saleId: sale.id };
-    });
-
-    return NextResponse.json({
-      success: true,
-      message: 'Transaksi berhasil disimpan',
-      saleId: result.saleId
-    }, { status: 201 });
-
+    return NextResponse.json({ success: true, message: 'Transaksi berhasil disimpan', saleId }, { status: 201 });
   } catch (error) {
     console.error('Error creating sale:', error);
-    return NextResponse.json(
-      { 
-        success: false,
-        error: 'Gagal menyimpan transaksi',
-        details: process.env.NODE_ENV === 'development' ? error.message : undefined
-      },
-      { status: 500 }
-    );
+    if (connection) {
+      try { await connection.rollback(); } catch {}
+    }
+    return NextResponse.json({ success: false, error: 'Gagal menyimpan transaksi' }, { status: 500 });
   } finally {
-    await prisma.$disconnect().catch(console.error);
+    if (connection) connection.release();
   }
 }

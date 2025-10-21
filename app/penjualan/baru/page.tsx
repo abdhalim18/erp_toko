@@ -11,27 +11,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Plus, X, Search, ArrowLeft, Loader2, ShoppingCart, User, CreditCard, AlertCircle, Minus, Check } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
-import toast from "react-hot-toast";
+import { toast } from "sonner";
 
-// Data dummy produk
-const products = [
-  { id: 1, name: "Royal Canin Kitten 1kg", price: 150000, stock: 50 },
-  { id: 2, name: "Whiskas Adult 1.2kg", price: 90000, stock: 30 },
-  { id: 3, name: "Pasir Kucing Super 5kg", price: 60000, stock: 20 },
-  { id: 4, name: "Kandang Kucing Besar", price: 800000, stock: 5 },
-  { id: 5, name: "Tas Carrier Kucing", price: 250000, stock: 8 },
-  { id: 6, name: "Tempat Makan Kucing", price: 75000, stock: 15 },
-  { id: 7, name: "Kalung Kucing", price: 50000, stock: 25 },
-  { id: 8, name: "Mainan Kucing", price: 100000, stock: 12 }
-];
-
-// Data dummy pelanggan
+type Product = { id: number; name: string; price: number; stock: number };
 const customers = [
-  { id: 1, name: "Pelanggan Umum", phone: "-", email: "-" },
-  { id: 2, name: "Budi Santoso", phone: "081234567890", email: "budi@example.com" },
-  { id: 3, name: "Siti Aminah", phone: "082345678901", email: "siti@example.com" },
-  { id: 4, name: "Andi Wijaya", phone: "083456789012", email: "andi@example.com" },
-  { id: 5, name: "Dewi Lestari", phone: "084567890123", email: "dewi@example.com" }
+  { id: 1, name: "Pelanggan Umum", phone: "-", email: "-" }
 ];
 
 type CartItem = {
@@ -50,6 +34,7 @@ export default function NewSalePage() {
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [searchProduct, setSearchProduct] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
   const [notes, setNotes] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
 
@@ -63,8 +48,33 @@ export default function NewSalePage() {
     product.name.toLowerCase().includes(searchProduct.toLowerCase())
   );
 
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      setIsLoading(true);
+      try {
+        const res = await fetch('/api/produk');
+        if (!res.ok) throw new Error('Gagal memuat produk');
+        const data = await res.json();
+        const mapped: Product[] = (data || []).map((p: any) => ({
+          id: Number(p.id),
+          name: p.name ?? p.nama ?? '',
+          price: Number(p.sellingPrice ?? p.harga ?? 0),
+          stock: Number(p.stock ?? p.stok ?? 0),
+        }));
+        if (mounted) setProducts(mapped);
+      } catch (e) {
+        // optional: show toast error
+      } finally {
+        if (mounted) setIsLoading(false);
+      }
+    };
+    load();
+    return () => { mounted = false; };
+  }, []);
+
   // Tambah produk ke keranjang
-  const addToCart = (product: typeof products[0]) => {
+  const addToCart = (product: Product) => {
     setCart(prevCart => {
       const existingItem = prevCart.find(item => item.id === product.id);
       
@@ -142,32 +152,32 @@ export default function NewSalePage() {
     setIsSubmitting(true);
 
     try {
-      // Simulasi API call
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      
-      // Generate ID transaksi acak
-      const newTransactionId = `INV-${Math.floor(1000 + Math.random() * 9000)}`;
-      
-      // Simpan data transaksi (dalam aplikasi nyata, ini akan mengirim ke API)
-      const transactionData = {
-        id: newTransactionId,
-        date: new Date().toISOString(),
-        customerId: parseInt(customer),
-        items: cart,
-        subtotal,
-        tax,
-        total,
-        payment: paymentMethod,
-        notes,
-        status: 'completed'
+      const payload = {
+        userId: null,
+        notes: notes || null,
+        discount: 0,
+        tax: tax,
+        items: cart.map(ci => ({
+          productId: ci.id,
+          quantity: ci.quantity,
+          unitPrice: ci.price,
+        })),
       };
 
-      console.log('Transaksi berhasil:', transactionData);
-      
-      toast.success(`Transaksi ${newTransactionId} berhasil disimpan`);
-      
-      // Redirect ke halaman detail transaksi
-      router.push(`/penjualan/${newTransactionId}`);
+      const res = await fetch('/api/penjualan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(txt || `Gagal menyimpan transaksi (status ${res.status})`);
+      }
+
+      toast.success('Transaksi berhasil disimpan');
+      router.push('/penjualan');
+      router.refresh();
     } catch (error) {
       console.error('Gagal menyimpan transaksi:', error);
       toast.error("Gagal menyimpan transaksi. Silakan coba lagi.");

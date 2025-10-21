@@ -1,109 +1,79 @@
 import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import pool from '@/lib/db';
 
-// Database connection check function
-async function checkDatabaseConnection() {
-  try {
-    await prisma.$connect();
-    console.log('Successfully connected to database');
-    return true;
-  } catch (error) {
-    console.error('Failed to connect to database:', error);
-    return false;
-  }
+// Interface for supplier data from database
+interface DBSupplier {
+  id: number;
+  nama: string;
+  alamat: string | null;
+  telepon: string | null;
+  email: string | null;
+  dibuat_pada: string;
+  diperbarui_pada: string;
+  product_count?: number;
 }
 
-// Simple interface for database result
-interface SupplierRow {
-  id: string;
+// Interface for API response
+interface Supplier {
+  id: number;
   name: string;
-  address?: string;
-  phone?: string;
-  email?: string;
-  createdAt?: Date;
-  updatedAt?: Date;
+  address: string;
+  phone: string;
+  email: string;
+  productCount: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export async function GET() {
-  let prismaConnected = false;
+  let connection;
   
   try {
-    console.log('=== Starting GET /api/pemasok ===');
+    // Get connection from pool
+    connection = await pool.getConnection();
     
-    // Check database connection
-    prismaConnected = await checkDatabaseConnection();
-    if (!prismaConnected) {
-      throw new Error('Tidak dapat terhubung ke database');
-    }
+    // Get all suppliers with product count
+    const [suppliers] = await connection.query(
+      'SELECT p.*, COUNT(pr.id) as product_count ' +
+      'FROM pemasok p ' +
+      'LEFT JOIN produk pr ON p.id = pr.id_pemasok ' +
+      'GROUP BY p.id ' +
+      'ORDER BY p.nama ASC'
+    ) as [DBSupplier[], any];
 
-    // Get suppliers with correct column names
-    const suppliers = await prisma.$queryRaw`
-      SELECT 
-        pemasok as id,
-        nama as name,
-        alamat as address,
-        telepon as phone,
-        email as email,
-        nama_kontak as contactName,
-        dibuat_pada as createdAt,
-        diperbarui_pada as updatedAt
-      FROM pemasok
-      ORDER BY nama ASC
-    `;
-    
-    console.log(`Successfully fetched ${Array.isArray(suppliers) ? suppliers.length : 0} suppliers`);
-    
-    // Transform to match expected format
-    const formattedSuppliers = (Array.isArray(suppliers) ? suppliers : []).map(supplier => ({
-      id: supplier.id || '',
-      name: supplier.name || '',
-      address: supplier.address || '',
-      phone: supplier.phone || '',
+    // Format the response
+    const formattedSuppliers: Supplier[] = suppliers.map(supplier => ({
+      id: supplier.id,
+      name: supplier.nama,
+      address: supplier.alamat || '',
+      phone: supplier.telepon || '',
       email: supplier.email || '',
-      contactName: supplier.contactName || '',
-      createdAt: supplier.createdAt,
-      updatedAt: supplier.updatedAt
+      productCount: supplier.product_count || 0,
+      createdAt: supplier.dibuat_pada,
+      updatedAt: supplier.diperbarui_pada,
     }));
-    
-    return NextResponse.json(formattedSuppliers, { 
-      status: 200,
-      headers: { 'Content-Type': 'application/json' }
-    });
-    
+
+    return NextResponse.json(formattedSuppliers);
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('Error in GET /api/pemasok:', {
-      error: errorMessage,
-      stack: error instanceof Error ? error.stack : undefined,
-      timestamp: new Date().toISOString()
-    });
-    
+    console.error('Error fetching suppliers:', error);
     return NextResponse.json(
-      { 
-        error: 'Gagal mengambil data pemasok',
-        details: process.env.NODE_ENV === 'development' ? errorMessage : undefined
-      },
-      { 
-        status: 500,
-        headers: { 'Content-Type': 'application/json' }
-      }
+      { error: 'Gagal mengambil data pemasok' },
+      { status: 500 }
     );
-    
   } finally {
-    if (prismaConnected) {
-      try {
-        await prisma.$disconnect();
-      } catch (e) {
-        console.error('Error disconnecting from database:', e);
-      }
-    }
+    // Release the connection back to the pool
+    if (connection) connection.release();
   }
 }
 
 export async function POST(request: Request) {
+  let connection;
+  
   try {
-    const { name, address, phone, email } = await request.json();
-    
+    const body = await request.json();
+    const { name, address, phone, email } = body;
+
+    // Validate required fields
     if (!name) {
       return NextResponse.json(
         { error: 'Nama pemasok harus diisi' },
@@ -111,137 +81,133 @@ export async function POST(request: Request) {
       );
     }
 
-    console.log('Adding new supplier:', { name, address, phone, email });
+    // Get connection from pool
+    connection = await pool.getConnection();
+    
+    // Check if supplier with the same name already exists
+    const [existingSuppliers] = await connection.query(
+      'SELECT id FROM pemasok WHERE LOWER(nama) = LOWER(?)',
+      [name]
+    ) as [any[], any];
 
-    const newSupplier = await prisma.$executeRaw`
-      INSERT INTO pemasok (
-        pemasok,
-        nama,
-        alamat,
-        telepon,
-        email,
-        dibuat_pada,
-        diperbarui_pada
-      )
-      VALUES (
-        UUID(),
-        ${name},
-        ${address || null},
-        ${phone || null},
-        ${email || null},
-        NOW(),
-        NOW()
-      )
-    `;
+    if (existingSuppliers.length > 0) {
+      return NextResponse.json(
+        { error: 'Pemasok dengan nama tersebut sudah ada' },
+        { status: 400 }
+      );
+    }
 
-    console.log('Pemasok berhasil ditambahkan');
+    // Create new supplier
+    const [result] = await connection.query(
+      'INSERT INTO pemasok (nama, alamat, telepon, email) VALUES (?, ?, ?, ?)',
+      [name, address || null, phone || null, email || null]
+    ) as [any, any];
 
-    return NextResponse.json(
-      { 
-        success: true,
-        message: 'Pemasok berhasil ditambahkan',
-        data: { name, address, phone, email }
-      },
-      { status: 201 }
-    );
+    // Get the newly created supplier
+    const [newSupplier] = await connection.query(
+      'SELECT * FROM pemasok WHERE id = ?',
+      [result.insertId]
+    ) as [DBSupplier[], any];
+
+    // Format the response
+    const formattedSupplier: Supplier = {
+      id: newSupplier[0].id,
+      name: newSupplier[0].nama,
+      address: newSupplier[0].alamat || '',
+      phone: newSupplier[0].telepon || '',
+      email: newSupplier[0].email || '',
+      productCount: 0, // New supplier has no products yet
+      createdAt: newSupplier[0].dibuat_pada,
+      updatedAt: newSupplier[0].diperbarui_pada,
+    };
+
+    return NextResponse.json(formattedSupplier, { status: 201 });
   } catch (error) {
-    console.error('Error menambahkan pemasok:', error);
+    console.error('Error creating supplier:', error);
     return NextResponse.json(
-      { 
-        success: false,
-        error: 'Gagal menambahkan pemasok',
-        details: process.env.NODE_ENV === 'development' ? error.message : undefined
-      },
+      { error: 'Gagal menambahkan pemasok' },
       { status: 500 }
     );
   } finally {
-    await prisma.$disconnect();
+    if (connection) connection.release();
   }
 }
 
 export async function DELETE(request: Request) {
-  let prismaConnected = false;
+  let connection;
   
   try {
-    // Check database connection
-    prismaConnected = await checkDatabaseConnection();
-    if (!prismaConnected) {
-      throw new Error('Tidak dapat terhubung ke database');
-    }
-
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
 
     if (!id) {
       return NextResponse.json(
-        { error: 'ID pemasok tidak valid' },
+        { error: 'ID pemasok harus disertakan' },
         { status: 400 }
       );
     }
 
-    console.log('Attempting to delete supplier with ID:', id);
+    // Get connection from pool
+    connection = await pool.getConnection();
+    
+    // Check if supplier exists
+    const [suppliers] = await connection.query(
+      'SELECT * FROM pemasok WHERE id = ?',
+      [id]
+    ) as [DBSupplier[], any];
 
-    // First, check if there are any dependent records
-    const hasDependencies = await prisma.$queryRaw`
-      SELECT COUNT(*) as count FROM produk WHERE id_pemasok = ${id}
-    `;
-
-    if (hasDependencies && hasDependencies[0]?.count > 0) {
+    if (suppliers.length === 0) {
       return NextResponse.json(
-        { 
-          error: 'Tidak dapat menghapus pemasok karena terdapat produk yang terkait',
-          details: 'Harap hapus atau ubah pemasok untuk produk yang terkait terlebih dahulu'
+        { error: 'Pemasok tidak ditemukan' },
+        { status: 404 }
+      );
+    }
+
+    // Check if supplier has associated products
+    const [products] = await connection.query(
+      'SELECT COUNT(*) as count FROM produk WHERE id_pemasok = ?',
+      [id]
+    ) as [{ count: number }[], any];
+
+    if (products[0].count > 0) {
+      return NextResponse.json(
+        {
+          error: 'Tidak dapat menghapus pemasok karena memiliki produk yang terkait',
         },
         { status: 400 }
       );
     }
 
     // Delete the supplier
-    await prisma.$executeRaw`
-      DELETE FROM pemasok WHERE pemasok = ${id}
-    `;
+    await connection.query('DELETE FROM pemasok WHERE id = ?', [id]);
 
-    console.log('Supplier deleted successfully:', id);
-    
     return NextResponse.json(
-      { 
-        success: true,
-        message: 'Pemasok berhasil dihapus',
-        data: { id }
-      },
+      { message: 'Pemasok berhasil dihapus' },
       { status: 200 }
     );
-
   } catch (error) {
     console.error('Error deleting supplier:', error);
     
     let errorMessage = 'Gagal menghapus pemasok';
     let statusCode = 500;
-    let details = null;
+    
+    // Check for specific error types if needed
+    if (error instanceof Error) {
+      errorMessage = error.message;
+      // Handle specific error codes if needed
+    }
 
     // Handle foreign key constraint errors
     if (error.message?.includes('foreign key constraint')) {
       errorMessage = 'Tidak dapat menghapus pemasok karena terdapat data yang terkait';
-      details = 'Harap hapus atau ubah data produk/pembelian yang terkait dengan pemasok ini terlebih dahulu';
       statusCode = 400;
     }
 
     return NextResponse.json(
-      { 
-        success: false,
-        error: errorMessage,
-        details: process.env.NODE_ENV === 'development' ? (details || error.message) : details
-      },
+      { error: errorMessage },
       { status: statusCode }
     );
-    
   } finally {
-    if (prismaConnected) {
-      try {
-        await prisma.$disconnect();
-      } catch (e) {
-        console.error('Error disconnecting from database:', e);
-      }
-    }
+    if (connection) await connection.release();
   }
 }

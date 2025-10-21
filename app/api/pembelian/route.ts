@@ -1,189 +1,96 @@
 import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
-
-// Database connection check function
-async function checkDatabaseConnection() {
-  try {
-    await prisma.$connect();
-    console.log('Successfully connected to database');
-    return true;
-  } catch (error) {
-    console.error('Failed to connect to database:', error);
-    return false;
-  }
-}
+import pool from '@/lib/db';
 
 export async function GET() {
-  let prismaConnected = false;
-  
+  let connection;
   try {
-    console.log('=== Starting GET /api/pembelian ===');
-    
-    // Check database connection
-    prismaConnected = await checkDatabaseConnection();
-    if (!prismaConnected) {
-      throw new Error('Tidak dapat terhubung ke database');
-    }
-
-    const purchases = await prisma.$queryRaw`
-      SELECT 
-        p.pembelian as id,
-        p.nomor_pesanan as no_faktur,
-        s.nama as nama_pemasok,
-        p.tanggal_pesanan as tanggal,
-        p.total_jumlah as total,
-        p.status,
-        p.dibuat_pada as created_at,
-        p.diperbarui_pada as updated_at
-      FROM pembelian p
-      LEFT JOIN pemasok s ON p.id_pemasok = s.pemasok
-      ORDER BY p.tanggal_pesanan DESC
-    `;
-
-    // Convert BigInt to string to avoid serialization issues
-    const safePurchases = JSON.parse(JSON.stringify(purchases, (key, value) =>
-      typeof value === 'bigint' ? value.toString() : value
-    ));
-
-    console.log(`Successfully fetched ${Array.isArray(safePurchases) ? safePurchases.length : 0} purchases`);
-    
-    return NextResponse.json(safePurchases, { 
-      status: 200,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('Error in GET /api/pembelian:', {
-      error: errorMessage,
-      stack: error instanceof Error ? error.stack : undefined,
-      timestamp: new Date().toISOString()
-    });
-    
-    return NextResponse.json(
-      { 
-        error: 'Gagal mengambil data pembelian',
-        details: process.env.NODE_ENV === 'development' ? errorMessage : undefined
-      },
-      { 
-        status: 500,
-        headers: { 'Content-Type': 'application/json' }
-      }
+    connection = await pool.getConnection();
+    const [rows] = await connection.query(
+      `SELECT 
+        p.id,
+        CONCAT('PO-', DATE_FORMAT(p.tanggal, '%Y%m%d'), '-', LPAD(p.id, 6, '0')) AS no_faktur,
+        COALESCE(s.nama, '') AS nama_pemasok,
+        p.tanggal AS tanggal,
+        COALESCE(p.grand_total, p.total, 0) AS total,
+        'diproses' AS status,
+        COALESCE(p.dibuat_pada, p.tanggal) AS created_at
+       FROM pembelian p
+       LEFT JOIN pemasok s ON p.id_pemasok = s.id
+       ORDER BY p.tanggal DESC`
     );
+    return NextResponse.json(rows, { status: 200 });
+  } catch (error) {
+    console.error('Error in GET /api/pembelian:', error);
+    return NextResponse.json({ error: 'Gagal mengambil data pembelian' }, { status: 500 });
   } finally {
-    if (prismaConnected) {
-      try {
-        await prisma.$disconnect();
-      } catch (e) {
-        console.error('Error disconnecting from database:', e);
-      }
-    }
+    if (connection) connection.release();
   }
 }
 
 export async function POST(request: Request) {
-  let prismaConnected = false;
-  
+  let connection;
   try {
-    // Check database connection
-    prismaConnected = await checkDatabaseConnection();
-    if (!prismaConnected) {
-      throw new Error('Tidak dapat terhubung ke database');
-    }
-
     const data = await request.json();
-    
-    // Validate required fields
-    if (!data.items || !data.items.length || !data.supplierId) {
+    const { supplierId, items, notes } = data;
+
+    if (!items || !items.length || !supplierId) {
       return NextResponse.json(
-        { 
-          error: 'Pemasok dan minimal satu item harus diisi',
-          details: {
-            items: data.items,
-            supplierId: data.supplierId
-          }
-        },
+        { error: 'Pemasok dan minimal satu item harus diisi' },
         { status: 400 }
       );
     }
 
-    // Start a transaction
-    const result = await prisma.$transaction(async (tx) => {
-      // Generate purchase number
-      const purchaseNumber = `PO-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.floor(1000 + Math.random() * 9000)}`;
-      
-      // Create purchase header
-      await tx.$executeRaw`
-        INSERT INTO pembelian (
-          pembelian,
-          nomor_pesanan,
-          id_pemasok,
-          status,
-          tanggal_pesanan,
-          total_jumlah,
-          dibuat_pada,
-          diperbarui_pada
-        ) VALUES (
-          UUID(),
-          ${purchaseNumber},
-          ${data.supplierId},
-          'PENDING',
-          NOW(),
-          ${data.total || 0},
-          NOW(),
-          NOW()
-        )
-      `;
+    const total = items.reduce((sum: number, it: any) => sum + (Number(it.quantity) * Number(it.unitPrice)), 0);
+    const diskon = Number(data.discount || 0);
+    const pajak = Number(data.tax || 0);
+    const grandTotal = total - diskon + pajak;
 
-      // Get the inserted purchase ID
-      const [purchase] = await tx.$queryRaw`
-        SELECT pembelian as id FROM pembelian 
-        WHERE nomor_pesanan = ${purchaseNumber}
-        LIMIT 1
-      `;
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-      // Insert purchase items
-      for (const item of data.items) {
-        await tx.$executeRaw`
-          INSERT INTO item_pembelian (
-            item_pembelian,
-            id_pembelian,
-            id_produk,
-            kuantitas,
-            harga_per_unit,
-            dibuat_pada,
-            diperbarui_pada
-          ) VALUES (
-            UUID(),
-            ${purchase.id},
-            ${item.productId},
-            ${item.quantity},
-            ${item.unitPrice},
-            NOW(),
-            NOW()
-          )
-        `;
+    // Insert header
+    const [headerResult] = await connection.query(
+      `INSERT INTO pembelian (tanggal, id_pemasok, total, diskon, pajak, grand_total, catatan)
+       VALUES (NOW(), ?, ?, ?, ?, ?, ?)`,
+      [supplierId, total, diskon, pajak, grandTotal, notes || null]
+    ) as [any, any];
 
-        // Update product stock
-        await tx.$executeRaw`
-          UPDATE produk 
-          SET 
-            stok_sekarang = stok_sekarang + ${item.quantity},
-            harga_beli = ${item.unitPrice}
-          WHERE id = ${item.productId}
-        `;
-      }
+    const purchaseId = headerResult.insertId;
 
-      return purchase;
-    });
+    // Insert items and update stock + log stock mutation
+    for (const it of items) {
+      const qty = Number(it.quantity);
+      const harga = Number(it.unitPrice);
+      const subtotal = qty * harga;
 
-    return NextResponse.json(result, { status: 201 });
+      await connection.query(
+        `INSERT INTO pembelian_item (id_pembelian, id_produk, id_batch, qty, harga, subtotal)
+         VALUES (?, ?, NULL, ?, ?, ?)`,
+        [purchaseId, it.productId, qty, harga, subtotal]
+      );
+
+      await connection.query(
+        `UPDATE produk SET stok = stok + ? WHERE id = ?`,
+        [qty, it.productId]
+      );
+
+      await connection.query(
+        `INSERT INTO stok_mutasi (id_produk, id_batch, tipe, qty, referensi_tipe, referensi_id, keterangan)
+         VALUES (?, NULL, 'IN', ?, 'PEMBELIAN', ?, 'Pembelian')`,
+        [it.productId, qty, purchaseId]
+      );
+    }
+
+    await connection.commit();
+
+    return NextResponse.json({ id: purchaseId, total, diskon, pajak, grandTotal }, { status: 201 });
   } catch (error) {
     console.error('Error in POST /api/pembelian:', error);
-    return NextResponse.json(
-      { error: 'Gagal menyimpan transaksi pembelian' },
-      { status: 500 }
-    );
+    if (connection) {
+      try { await connection.rollback(); } catch {}
+    }
+    return NextResponse.json({ error: 'Gagal menyimpan transaksi pembelian' }, { status: 500 });
   } finally {
-    await prisma.$disconnect();
+    if (connection) connection.release();
   }
 }

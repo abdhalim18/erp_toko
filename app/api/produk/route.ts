@@ -1,179 +1,80 @@
 import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import pool from '@/lib/db';
 
 export async function GET() {
   try {
-    // Use raw query to match the actual database schema
-    const products = await prisma.$queryRaw`
-      SELECT 
-        p.produk as id,
-        p.nama as name,
-        p.sku as sku,
-        p.deskripsi as description,
-        p.harga_beli as price,
-        p.stok_sekarang as stock,
-        p.satuan as unit,
-        p.barcode as barcode
-      FROM produk p
-      WHERE p.stok_sekarang > 0
-      ORDER BY p.nama ASC
-    `;
-
-    // Convert BigInt to string to avoid serialization issues
-    const safeProducts = JSON.parse(JSON.stringify(products, (key, value) =>
-      typeof value === 'bigint' ? value.toString() : value
-    ));
-
-    return NextResponse.json(safeProducts, {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-store, max-age=0'
-      }
-    });
+    const [rows] = await pool.query(
+      `SELECT 
+         id,
+         nama AS name,
+         COALESCE(deskripsi, '') AS description,
+         harga AS sellingPrice,
+         stok AS stock,
+         id_kategori AS categoryId,
+         id_pemasok AS supplierId,
+         dibuat_pada AS createdAt,
+         diperbarui_pada AS updatedAt
+       FROM produk
+       ORDER BY diperbarui_pada DESC`
+    );
+    return NextResponse.json(rows);
   } catch (error) {
-    console.error('Error in GET /api/produk:', error);
+    console.error('Database error:', error);
     return NextResponse.json(
-      { 
-        error: 'Gagal mengambil data produk',
-        details: error instanceof Error ? error.message : 'Unknown error',
-        stack: process.env.NODE_ENV === 'development' ? (error as Error).stack : undefined
-      },
+      { error: 'Gagal mengambil data produk' },
       { status: 500 }
     );
-  } finally {
-    await prisma.$disconnect();
   }
-}
-
-interface ProductData {
-  name: string;
-  sku?: string;
-  description?: string;
-  purchasePrice: number | string;
-  sellingPrice: number | string;
-  stock: number | string;
-  minStock: number | string;
-  unit: string;
-  barcode?: string;
-  categoryId?: string;
-  supplierId?: string;
 }
 
 export async function POST(request: Request) {
   try {
-    const data: ProductData = await request.json();
+    const body = await request.json();
+    // Support both legacy and new payload keys
+    const nama: string | undefined = body.nama ?? body.name;
+    const deskripsi: string | null = (body.deskripsi ?? body.description) || null;
+    const harga: number | undefined = body.harga ?? body.sellingPrice;
+    const stok: number = Number(body.stok ?? body.stock ?? 0);
+    const id_kategori: number | null = body.id_kategori ?? (body.categoryId ? Number(body.categoryId) : null);
+    const id_pemasok: number | null = body.id_pemasok ?? (body.supplierId ? Number(body.supplierId) : null);
 
-    // Validate required fields
-    if (!data.name || !data.sellingPrice || !data.purchasePrice) {
-      return NextResponse.json(
-        { error: 'Nama, harga beli, dan harga jual harus diisi' },
-        { status: 400 }
-      );
+    if (!nama) {
+      return NextResponse.json({ error: 'Nama produk harus diisi' }, { status: 400 });
+    }
+    if (harga === undefined || Number.isNaN(Number(harga))) {
+      return NextResponse.json({ error: 'Harga jual harus diisi' }, { status: 400 });
     }
 
-    // Convert string numbers to numbers
-    const productData = {
-      nama: data.name,
-      sku: data.sku || `PRD-${Date.now()}`,
-      deskripsi: data.description || null,
-      harga_beli: Number(data.purchasePrice),
-      harga_jual: Number(data.sellingPrice),
-      stok_sekarang: Number(data.stock) || 0,
-      stok_minimal: Number(data.minStock) || 0,
-      satuan: data.unit || 'pcs',
-      barcode: data.barcode || null,
-      id_kategori: data.categoryId || null,
-      id_pemasok: data.supplierId || null,
-    };
+    const [result] = await pool.query(
+      `INSERT INTO produk (nama, deskripsi, harga, stok, id_kategori, id_pemasok)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [nama, deskripsi, Number(harga), Number(stok), id_kategori, id_pemasok]
+    ) as [any, any];
 
-    const newProduct = await prisma.$executeRaw`
-      INSERT INTO produk (
-        produk,
-        nama,
-        sku,
-        deskripsi,
-        harga_beli,
-        harga_jual,
-        stok_sekarang,
-        stok_minimal,
-        satuan,
-        barcode,
-        id_kategori,
-        id_pemasok,
-        dibuat_pada,
-        diperbarui_pada
-      ) VALUES (
-        UUID(),
-        ${productData.nama},
-        ${productData.sku},
-        ${productData.deskripsi},
-        ${productData.harga_beli},
-        ${productData.harga_jual},
-        ${productData.stok_sekarang},
-        ${productData.stok_minimal},
-        ${productData.satuan},
-        ${productData.barcode},
-        ${productData.id_kategori},
-        ${productData.id_pemasok},
-        NOW(),
-        NOW()
-      )
-    `;
+    const insertId = result.insertId;
 
-    return NextResponse.json(
-      { message: 'Produk berhasil ditambahkan' },
-      { status: 201 }
+    // Return the created product snapshot
+    const [rows] = await pool.query(
+      `SELECT 
+         id,
+         nama AS name,
+         COALESCE(deskripsi, '') AS description,
+         harga AS sellingPrice,
+         stok AS stock,
+         id_kategori AS categoryId,
+         id_pemasok AS supplierId,
+         dibuat_pada AS createdAt,
+         diperbarui_pada AS updatedAt
+       FROM produk WHERE id = ? LIMIT 1`,
+      [insertId]
     );
+
+    return NextResponse.json(rows[0] || { id: insertId }, { status: 201 });
   } catch (error) {
-    console.error('Error in POST /api/produk:', error);
+    console.error('Database error:', error);
     return NextResponse.json(
-      { 
-        error: 'Gagal menambahkan produk',
-        details: error instanceof Error ? error.message : 'Unknown error',
-        stack: process.env.NODE_ENV === 'development' ? (error as Error).stack : undefined
-      },
+      { error: 'Gagal menambahkan produk' },
       { status: 500 }
     );
-  } finally {
-    await prisma.$disconnect();
-  }
-}
-
-export async function DELETE(
-  request: Request,
-  { params }: { params: { id: string } }
-) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const id = searchParams.get('id');
-
-    if (!id) {
-      return NextResponse.json(
-        { error: 'ID produk tidak valid' },
-        { status: 400 }
-      );
-    }
-
-    await prisma.$executeRaw`
-      DELETE FROM produk WHERE produk = ${id}
-    `;
-
-    return NextResponse.json(
-      { message: 'Produk berhasil dihapus' },
-      { status: 200 }
-    );
-  } catch (error) {
-    console.error('Error in DELETE /api/produk:', error);
-    return NextResponse.json(
-      { 
-        error: 'Gagal menghapus produk',
-        details: error instanceof Error ? error.message : 'Unknown error',
-        stack: process.env.NODE_ENV === 'development' ? (error as Error).stack : undefined
-      },
-      { status: 500 }
-    );
-  } finally {
-    await prisma.$disconnect();
   }
 }

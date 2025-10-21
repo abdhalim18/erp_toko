@@ -60,9 +60,9 @@ export default function SalesPage() {
   };
 
   const filteredSales = sales.filter(sale => 
-    sale.no_faktur.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    sale.nama_pelanggan.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    sale.status.toLowerCase().includes(searchTerm.toLowerCase())
+    (sale.no_faktur || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (sale.nama_pelanggan || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (sale.status || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const getStatusBadge = (status: string) => {

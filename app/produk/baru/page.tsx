@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Plus, ArrowLeft, Save, Loader2, Image as ImageIcon } from "lucide-react";
+import { Plus, ArrowLeft, Save, Loader2, Image as ImageIcon, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -42,15 +42,22 @@ type FormData = {
 
 export default function NewProductPage() {
   const router = useRouter();
+  
+  // Categories state
   const [categories, setCategories] = useState<Category[]>([]);
   const [loadingCategories, setLoadingCategories] = useState<boolean>(true);
   const [categoriesError, setCategoriesError] = useState<string>('');
   
-  // Supplier states
+  // Suppliers state
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loadingSuppliers, setLoadingSuppliers] = useState<boolean>(true);
   const [suppliersError, setSuppliersError] = useState<string>('');
   
+  // Image state
+  const [imagePreview, setImagePreview] = useState<string>('');
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  
+  // Form state
   const [formData, setFormData] = useState<FormData>({
     name: '',
     sku: `PRD-${Date.now().toString().slice(-6)}`,
@@ -66,12 +73,54 @@ export default function NewProductPage() {
     weight: 0,
     isActive: true,
   });
+  
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    // Validate file type
+    if (!file.type.match('image.*')) {
+      toast.error('Format file tidak didukung. Harap unggah file gambar.');
+      return;
+    }
+    
+    // Validate file size (2MB max)
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error('Ukuran file terlalu besar. Maksimal 2MB.');
+      return;
+    }
+    
+    setImageFile(file);
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setImagePreview(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+  
+  const handleRemoveImage = () => {
+    setImagePreview('');
+    setImageFile(null);
+  };
+
+  // Update the file input to include title attribute for accessibility
+  const fileInput = (
+    <input
+      id="product-image"
+      type="file"
+      accept="image/*"
+      className="hidden"
+      onChange={handleImageChange}
+      title="Unggah gambar produk"
+      aria-label="Pilih gambar produk"
+    />
+  );
 
   // Fetch categories from API
   useEffect(() => {
     const fetchCategories = async () => {
       try {
-        setLoading(true);
+        setLoadingCategories(true);
         console.log('Fetching categories from /api/kategori...');
         
         const response = await fetch('/api/kategori', {
@@ -119,9 +168,9 @@ export default function NewProductPage() {
           stack: error instanceof Error ? error.stack : undefined,
           timestamp: new Date().toISOString()
         });
-        setError('Gagal memuat data kategori. Silakan periksa koneksi database dan coba lagi.');
+        setCategoriesError('Gagal memuat data kategori. Silakan periksa koneksi database dan coba lagi.');
       } finally {
-        setLoading(false);
+        setLoadingCategories(false);
       }
     };
 
@@ -185,7 +234,7 @@ export default function NewProductPage() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [imagePreview, setImagePreview] = useState('');
+  
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value, type } = e.target;
@@ -210,16 +259,7 @@ export default function NewProductPage() {
     }));
   };
 
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setImagePreview(reader.result as string);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
+  
 
   const generateBarcode = () => {
     // Generate random barcode (contoh sederhana)

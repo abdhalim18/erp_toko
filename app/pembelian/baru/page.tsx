@@ -65,7 +65,15 @@ export default function NewPurchasePage() {
         const productsRes = await fetch('/api/produk');
         if (!productsRes.ok) throw new Error('Gagal mengambil data produk');
         const productsData = await productsRes.json();
-        setProducts(productsData);
+        // Normalize API shape -> Product type expected here
+        const normalizedProducts: Product[] = (Array.isArray(productsData) ? productsData : []).map((p: any) => ({
+          id: String(p.id),
+          name: p.name ?? p.nama ?? '',
+          sku: p.sku ?? '',
+          stock: Number(p.stock ?? p.stok ?? 0),
+          price: Number(p.price ?? p.sellingPrice ?? p.harga ?? 0),
+        }));
+        setProducts(normalizedProducts);
         
       } catch (err) {
         const error = err as Error;
@@ -117,8 +125,8 @@ export default function NewPurchasePage() {
       newItems[index] = {
         ...newItems[index],
         productId,
-        price: product.price,
-        subtotal: product.price * newItems[index].quantity
+        price: Number.isFinite(product.price) ? product.price : 0,
+        subtotal: (Number.isFinite(product.price) ? product.price : 0) * newItems[index].quantity
       };
       setItems(newItems);
     }
@@ -227,10 +235,30 @@ export default function NewPurchasePage() {
     setLoading(true);
     
     try {
-      // Simulate API call
-      console.log('Submitting purchase data:', { ...formData, items });
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const payload = {
+        supplierId: formData.supplierId,
+        notes: formData.notes || null,
+        items: items.map((it) => ({
+          productId: it.productId,
+          quantity: it.quantity,
+          unitPrice: it.price,
+          subtotal: it.quantity * it.price,
+        })),
+      };
+
+      const res = await fetch('/api/pembelian', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(errText || `Gagal menyimpan pembelian (status ${res.status})`);
+      }
+
       router.push('/pembelian');
+      router.refresh();
     } catch (err) {
       console.error('Failed to save purchase:', err);
       setError('Gagal menyimpan pembelian. Silakan coba lagi.');
@@ -305,7 +333,7 @@ export default function NewPurchasePage() {
                   <Input 
                     id="invoiceNumber" 
                     name="invoiceNumber" 
-                    value={formData.invoiceNumber}
+                    value={formData.invoiceNumber ?? ''}
                     onChange={handleInputChange}
                     placeholder="Masukkan nomor faktur"
                   />
@@ -325,7 +353,7 @@ export default function NewPurchasePage() {
                       id="purchaseDate" 
                       type="date" 
                       name="purchaseDate"
-                      value={formData.purchaseDate}
+                      value={formData.purchaseDate ?? ''}
                       onChange={handleInputChange}
                       required
                     />
@@ -336,9 +364,9 @@ export default function NewPurchasePage() {
                       id="dueDate" 
                       type="date" 
                       name="dueDate"
-                      value={formData.dueDate}
+                      value={formData.dueDate ?? ''}
                       onChange={handleInputChange}
-                      min={formData.purchaseDate}
+                      min={formData.purchaseDate ?? ''}
                       required
                     />
                   </div>
@@ -349,7 +377,7 @@ export default function NewPurchasePage() {
                   <Textarea
                     id="notes"
                     name="notes"
-                    value={formData.notes}
+                    value={formData.notes ?? ''}
                     onChange={handleInputChange}
                     placeholder="Catatan tambahan (opsional)"
                     rows={3}
@@ -425,7 +453,7 @@ export default function NewPurchasePage() {
                             <Input
                               type="number"
                               min="1"
-                              value={item.quantity}
+                              value={Number.isFinite(item.quantity) && item.quantity > 0 ? item.quantity : 1}
                               onChange={(e) => handleQuantityChange(index, parseInt(e.target.value) || 1)}
                               className="text-center"
                               required
@@ -454,7 +482,7 @@ export default function NewPurchasePage() {
                             <Input
                               type="number"
                               min="0"
-                              value={item.price}
+                              value={Number.isFinite(item.price) ? item.price : 0}
                               onChange={(e) => handlePriceChange(index, parseFloat(e.target.value) || 0)}
                               className="pl-10"
                               required
